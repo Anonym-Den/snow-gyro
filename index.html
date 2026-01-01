@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Gyro Snow Debug</title>
+    <style>
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #080d15; touch-action: none; }
+        canvas { display: block; }
+        
+        #ui-layer {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            pointer-events: none;
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+        }
+
+        #debug-info {
+            position: absolute; top: 10px; left: 10px;
+            font-family: monospace; color: lime; font-size: 12px;
+            background: rgba(0,0,0,0.5); padding: 5px;
+            pointer-events: none; text-align: left;
+            white-space: pre;
+            z-index: 20;
+        }
+
+        #start-btn {
+            padding: 20px 40px; 
+            background: rgba(255, 255, 255, 0.15); 
+            border: 2px solid rgba(255, 255, 255, 0.5);
+            color: white; font-size: 20px; font-weight: bold;
+            border-radius: 50px; cursor: pointer;
+            backdrop-filter: blur(10px); 
+            pointer-events: auto;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+            transition: transform 0.1s;
+        }
+        #start-btn:active { transform: scale(0.95); background: rgba(255,255,255,0.3); }
+
+        #error-msg {
+            color: #ff5555; background: rgba(0,0,0,0.8); padding: 10px;
+            margin-bottom: 20px; display: none; text-align: center;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="debug-info">Ожидание запуска...</div>
+
+    <div id="ui-layer">
+        <div id="error-msg"></div>
+        <button id="start-btn">ВКЛЮЧИТЬ ГИРОСКОП</button>
+    </div>
+
+    <canvas id="c"></canvas>
+
+<script>
+// --- Логгер для отладки на телефоне ---
+const debugEl = document.getElementById('debug-info');
+function log(msg) {
+    debugEl.innerText = msg;
+}
+
+// Проверка протокола
+if (location.protocol !== 'https:' && location.hostname !== 'localhost') {
+    const err = document.getElementById('error-msg');
+    err.style.display = 'block';
+    err.innerHTML = "⚠️ ВНИМАНИЕ: Гироскоп не работает через file:// или http://.<br>Откройте через HTTPS или локальный сервер.";
+}
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d', { alpha: false });
+const startBtn = document.getElementById('start-btn');
+
+let W, H;
+let snow = [];
+let ground = [];
+let windSpeed = 0;
+
+// Гироскоп
+let gyro = {
+    active: false,
+    alpha: 0, beta: 0, gamma: 0,
+    lastAlpha: null
+};
+
+// Настройки
+const COUNT = 800;
+const PIXELS_PER_DEGREE = 12; // Чувствительность поворота
+
+// Спрайты
+const flakeSprites = [];
+function preRenderFlakes() {
+    for(let i=1; i<=5; i++) {
+        const c = document.createElement('canvas');
+        const size = i * 4; 
+        c.width = size; c.height = size;
+        const cx = c.getContext('2d');
+        const grad = cx.createRadialGradient(size/2, size/2, 0, size/2, size/2, size/2);
+        grad.addColorStop(0, `rgba(255, 255, 255, ${0.9})`);
+        grad.addColorStop(1, `rgba(255, 255, 255, 0)`);
+        cx.fillStyle = grad;
+        cx.fillRect(0, 0, size, size);
+        flakeSprites.push(c);
+    }
+}
+
+function init() {
+    resize();
+    preRenderFlakes();
+    for(let i=0; i<COUNT; i++) snow.push(new Flake(true));
+    loop();
+}
+
+function resize() {
+    W = canvas.width = window.innerWidth;
+    H = canvas.height = window.innerHeight;
+    if(!ground || ground.length !== Math.ceil(W)) {
+        ground = new Float32Array(Math.ceil(W)).fill(0);
+    }
+}
+
+class Flake {
+    constructor(randomY = false) {
+        this.reset(randomY);
+    }
+    reset(randomY) {
+        this.x = Math.random() * W;
+        this.y = randomY ? Math.random() * H : -20;
+        this.z = Math.random(); 
+        this.spriteIndex = Math.floor(this.z * 4.9);
+        this.vy = 0.5 + this.z * 2;
+        this.vx = 0;
+    }
+    update(shiftX) {
+        // Смещение мира
+        this.x -= shiftX;
+
+        // Влияние наклона (gamma) на ветер
+        let tiltWind = 0;
+        if (gyro.active) {
+            // gamma [-90...90]. Делим, чтобы не сдувало слишком резко
+            tiltWind = gyro.gamma * 0.1;
+        }
+
+        this.x += tiltWind + this.vx + Math.sin(this.y * 0.01) * 0.5;
+        this.y += this.vy;
+
+        // Зацикливание X
+        if(this.x > W) this.x -= W;
+        if(this.x < 0) this.x += W;
+
+        // Земля
+        let gx = Math.floor(this.x);
+        if (gx < 0) gx = 0; if (gx >= W) gx = W - 1;
+
+        if(gx >= 0 && gx < W) {
+            if(this.y >= H - ground[gx]) {
+                if(this.z > 0.3) this.addToGround(gx);
+                this.reset(false);
+            }
+        }
+        if (this.y > H + 50) this.reset(false);
+    }
+    addToGround(x) {
+        const amount = (this.z * 0.8) + 0.2;
+        for(let i=-2; i<=2; i++) {
+            let t = x+i;
+            if (t < 0) t += W; 
+            if (t >= W) t -= W;
+            ground[t] += amount / (Math.abs(i)+1);
+        }
+    }
+    draw() {
+        const img = flakeSprites[this.spriteIndex];
+        ctx.globalAlpha = 0.6 + this.z * 0.4;
+        ctx.drawImage(img, this.x - img.width/2, this.y - img.height/2);
+    }
+}
+
+// Сдвиг массива земли (оптимизированный)
+function shiftGround(pixels) {
+    if (Math.abs(pixels) < 1) return;
+    const shift = Math.round(pixels);
+    const len = ground.length;
+    const temp = new Float32Array(len);
+    for(let i=0; i<len; i++) {
+        let src = (i + shift) % len;
+        if (src < 0) src += len;
+        temp[i] = ground[src];
+    }
+    ground.set(temp);
+}
+
+function updateGround() {
+    // Сглаживание
+    for(let i=0; i<W; i++) {
+        let l = i-1; if(l<0) l=W-1;
+        let r = i+1; if(r>=W) r=0;
+        ground[i] = (ground[l] + ground[i] + ground[r]) / 3;
+    }
+}
+
+// === ЛОГИКА ГИРОСКОПА ===
+
+function handleOrientation(e) {
+    gyro.active = true;
+    gyro.alpha = e.alpha || 0; // Компас/Поворот
+    gyro.beta = e.beta || 0;   // Наклон вперед
+    gyro.gamma = e.gamma || 0; // Наклон бок
+
+    // Обновляем текст отладки
+    log(`Alpha (Вращение): ${gyro.alpha.toFixed(1)}\nGamma (Наклон): ${gyro.gamma.toFixed(1)}\nBeta: ${gyro.beta.toFixed(1)}`);
+}
+
+function getGyroShift() {
+    if (!gyro.active || gyro.lastAlpha === null) {
+        gyro.lastAlpha = gyro.alpha;
+        return 0;
+    }
+
+    let delta = gyro.alpha - gyro.lastAlpha;
+    // Обработка перехода через 360
+    if (delta > 180) delta -= 360;
+    if (delta < -180) delta += 360;
+
+    gyro.lastAlpha = gyro.alpha;
+
+    // Фильтр шума
+    if (Math.abs(delta) < 0.1) return 0;
+
+    return delta * PIXELS_PER_DEGREE;
+}
+
+// Запуск по кнопке
+startBtn.addEventListener('click', async () => {
+    startBtn.style.display = 'none'; // Скрыть кнопку
+    log("Запрос доступа...");
+
+    if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+        // iOS 13+
+        try {
+            const resp = await DeviceOrientationEvent.requestPermission();
+            if (resp === 'granted') {
+                log("Доступ разрешен (iOS).");
+                window.addEventListener('deviceorientation', handleOrientation);
+            } else {
+                log("ОТКАЗАНО в доступе. Перезагрузите страницу.");
+                startBtn.style.display = 'block';
+            }
+        } catch (e) {
+            log("Ошибка API: " + e.message);
+            startBtn.style.display = 'block';
+        }
+    } else {
+        // Android / PC
+        log("Запуск слушателя (Android/PC)...");
+        window.addEventListener('deviceorientation', handleOrientation);
+    }
+});
+
+// === ОТРИСОВКА ===
+
+function draw() {
+    // Фон
+    const grad = ctx.createLinearGradient(0,0,0,H);
+    grad.addColorStop(0, '#0a1525');
+    grad.addColorStop(1, '#152a45');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0,0,W,H);
+
+    // Земля
+    ctx.fillStyle = "#eef";
+    ctx.beginPath();
+    ctx.moveTo(0, H);
+    for(let i=0; i<W; i+=5) ctx.lineTo(i, H - ground[i]);
+    ctx.lineTo(W, H); ctx.lineTo(0, H);
+    ctx.fill();
+
+    // Снег
+    const shift = getGyroShift();
+    if (shift !== 0) shiftGround(shift);
+
+    for(let s of snow) {
+        s.update(shift);
+        s.draw();
+    }
+    
+    updateGround();
+    requestAnimationFrame(draw);
+}
+
+window.onresize = resize;
+init();
+
+</script>
+</body>
+</html>
