@@ -3,298 +3,292 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Gyro Snow FIXED</title>
+    <title>Gyro Snow Side Tilt</title>
     <style>
         body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #000; touch-action: none; }
         canvas { display: block; width: 100%; height: 100%; }
         
         #ui-layer {
             position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-            pointer-events: none;
             display: flex; flex-direction: column; align-items: center; justify-content: center;
-            z-index: 10;
-        }
-
-        #debug-info {
-            position: absolute; top: 10px; left: 10px;
-            font-family: monospace; color: #0f0; font-size: 14px;
-            background: rgba(0,0,0,0.7); padding: 8px;
-            text-align: left; pointer-events: none;
-            white-space: pre-wrap;
-            border: 1px solid #0f0;
+            z-index: 20; pointer-events: none;
         }
 
         #start-btn {
-            padding: 20px 40px; 
-            background: #fff; color: #000;
-            font-size: 20px; font-weight: bold;
+            pointer-events: auto;
+            padding: 20px 50px; 
+            background: #fff; color: #000; 
+            font-family: sans-serif; font-size: 18px; font-weight: bold; 
             border-radius: 50px; border: none;
-            cursor: pointer; pointer-events: auto;
-            box-shadow: 0 0 20px rgba(255,255,255,0.5);
+            box-shadow: 0 0 20px rgba(255, 255, 255, 0.8);
         }
 
-        #error-box {
-            position: absolute; bottom: 0; left: 0; width: 100%;
-            background: red; color: white; font-family: sans-serif;
-            padding: 10px; font-size: 12px; display: none; z-index: 100;
-            word-break: break-all;
+        #debug {
+            position: absolute; top: 10px; left: 10px;
+            color: lime; font-family: monospace; font-size: 14px;
+            pointer-events: none; text-shadow: 1px 1px 1px black;
         }
     </style>
 </head>
 <body>
 
-    <div id="debug-info">Загрузка...</div>
-    <div id="error-box"></div>
-
+    <div id="debug">Нажмите кнопку...</div>
     <div id="ui-layer">
-        <button id="start-btn">ЗАПУСТИТЬ</button>
+        <button id="start-btn">ВКЛЮЧИТЬ ГИРОСКОП</button>
     </div>
-
     <canvas id="c"></canvas>
 
 <script>
-// --- 1. Глобальный перехват ошибок (чтобы понять, почему не работает) ---
-window.onerror = function(msg, url, line, col, error) {
-    const box = document.getElementById('error-box');
-    box.style.display = 'block';
-    box.innerHTML += `ОШИБКА: ${msg} <br>Line: ${line}`;
-    return false;
-};
-
-// --- Логгер ---
-const debugEl = document.getElementById('debug-info');
-let frameCount = 0;
-function log(msg) {
-    debugEl.innerHTML = `Frames: ${frameCount}<br>W:${window.innerWidth} H:${window.innerHeight}<br>${msg}`;
-}
-
-const canvas = document.getElementById('c');
-const ctx = canvas.getContext('2d'); // Убрали alpha: false для совместимости
-const startBtn = document.getElementById('start-btn');
-const uiLayer = document.getElementById('ui-layer');
-
-let W = window.innerWidth;
-let H = window.innerHeight;
-let snow = [];
-let ground = [];
-let gyro = { active: false, alpha: 0, beta: 0, gamma: 0, lastAlpha: null };
-
-// Настройки
-const COUNT = 600; // Чуть меньше для надежности
-const PIXELS_PER_DEGREE = 10;
-
-// Инициализация размеров
-canvas.width = W;
-canvas.height = H;
-
-// Инициализация земли (простой массив)
-// Делаем +100 пикселей запаса, чтобы точно не вылетало
-try {
-    ground = new Float32Array(W + 100).fill(0);
-} catch(e) {
-    // Если Float32Array не работает на старом устройстве
-    ground = [];
-    for(let i=0; i<W+100; i++) ground.push(0);
-}
-
-class Flake {
-    constructor(initY = false) {
-        this.init(initY);
-    }
-    init(initY) {
-        this.x = Math.random() * W;
-        this.y = initY ? Math.random() * H : -10;
-        this.z = Math.random(); // Глубина 0..1
-        this.vy = 1 + this.z * 2; // Скорость падения
-        this.vx = 0;
-        this.size = 1 + this.z * 3; // Размер точки
-    }
-    update(shiftX) {
-        // Смещение мира
-        this.x -= shiftX;
-
-        // Ветер от наклона
-        let wind = gyro.active ? (gyro.gamma * 0.15) : 0;
-        
-        this.x += this.vx + wind;
-        this.y += this.vy;
-
-        // Зацикливание по X
-        if(this.x >= W) this.x -= W;
-        if(this.x < 0) this.x += W;
-
-        // Земля
-        let gx = Math.floor(this.x);
-        if(gx < 0) gx = 0;
-        if(gx >= W) gx = W - 1;
-
-        // Проверка столкновения
-        let groundY = H - ground[gx];
-        if(this.y >= groundY) {
-            // Добавляем снег, если снежинка крупная
-            if(this.z > 0.3) {
-                addSnowToGround(gx, this.z);
-            }
-            this.init(false); // Респаун наверху
-        }
-
-        if(this.y > H + 20) this.init(false);
-    }
-    draw() {
-        ctx.beginPath();
-        ctx.arc(this.x, this.y, this.size, 0, Math.PI*2);
-        // Прозрачность в зависимости от Z
-        ctx.fillStyle = `rgba(255, 255, 255, ${0.4 + this.z * 0.6})`;
-        ctx.fill();
-    }
-}
-
-function addSnowToGround(x, z) {
-    // Просто наращиваем высоту
-    let amount = 0.5 + z; 
-    // Распределяем на соседей (с проверкой границ)
-    for(let i = -2; i <= 2; i++) {
-        let t = x + i;
-        if(t < 0) t += W;
-        if(t >= W) t -= W;
-        // Защита от NaN
-        if(ground[t] !== undefined) {
-            ground[t] += amount / (Math.abs(i) + 1);
-            // Лимит высоты сугроба (чтобы не улетел в космос)
-            if(ground[t] > H/2) ground[t] = H/2;
-        }
-    }
-}
-
-function shiftGround(shiftPixels) {
-    if(Math.abs(shiftPixels) < 1) return;
-    
-    // Создаем копию
-    let temp = new Float32Array(ground.length);
-    let shift = Math.round(shiftPixels);
-    let len = ground.length;
-
-    for(let i=0; i<len; i++) {
-        let src = (i + shift) % len;
-        if(src < 0) src += len;
-        temp[i] = ground[src];
-    }
-    // Копируем обратно
-    for(let i=0; i<len; i++) ground[i] = temp[i];
-}
-
-function updateGroundSmooth() {
-    // Сглаживание сугробов
-    for(let i=0; i<W; i++) {
-        let prev = (i === 0) ? W - 1 : i - 1;
-        let next = (i === W - 1) ? 0 : i + 1;
-        ground[i] = (ground[prev] + ground[i] + ground[next]) / 3;
-    }
-}
-
-function handleGyro(e) {
-    gyro.active = true;
-    gyro.alpha = e.alpha || 0;
-    gyro.beta = e.beta || 0;
-    gyro.gamma = e.gamma || 0;
-    
-    // Инфо на экран
-    debugEl.innerText = `Gyro OK\nA:${gyro.alpha.toFixed(0)} B:${gyro.beta.toFixed(0)} G:${gyro.gamma.toFixed(0)}`;
-}
-
-function getGyroShift() {
-    if(!gyro.active || gyro.lastAlpha === null) {
-        gyro.lastAlpha = gyro.alpha;
-        return 0;
-    }
-    let d = gyro.alpha - gyro.lastAlpha;
-    if(d > 180) d -= 360;
-    if(d < -180) d += 360;
-    
-    // Фильтр мелкой дрожи
-    if(Math.abs(d) < 0.1) return 0;
-
-    gyro.lastAlpha = gyro.alpha;
-    return d * PIXELS_PER_DEGREE;
-}
-
-// Создаем снежинки
-for(let i=0; i<COUNT; i++) {
-    snow.push(new Flake(true));
-}
-
-function animate() {
-    frameCount++;
-    
-    // Очистка экрана (темно-синий фон)
-    ctx.fillStyle = '#0a1525';
-    ctx.fillRect(0, 0, W, H);
-
-    // Рисуем землю
-    ctx.fillStyle = '#eee';
-    ctx.beginPath();
-    ctx.moveTo(0, H);
-    // Рисуем с шагом 5 для скорости
-    for(let i=0; i<W; i+=5) {
-        let gH = ground[i] || 0;
-        ctx.lineTo(i, H - gH);
-    }
-    ctx.lineTo(W, H);
-    ctx.fill();
-
-    // Сдвиг от гироскопа
-    let shift = getGyroShift();
-    if(shift !== 0) shiftGround(shift);
-
-    // Снег
-    for(let s of snow) {
-        s.update(shift);
-        s.draw();
-    }
-    
-    updateGroundSmooth();
-    requestAnimationFrame(animate);
-}
-
-// Запуск
-startBtn.addEventListener('click', async () => {
-    // Пытаемся включить гироскоп
-    if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
-        try {
-            const resp = await DeviceOrientationEvent.requestPermission();
-            if (resp === 'granted') {
-                window.addEventListener('deviceorientation', handleGyro);
-                uiLayer.style.display = 'none'; // Убираем кнопку
-            } else {
-                alert("Нужен доступ к датчикам!");
-            }
-        } catch (e) {
-            alert("Ошибка iOS: " + e);
-        }
-    } else {
-        // Android
-        window.addEventListener('deviceorientation', handleGyro);
-        uiLayer.style.display = 'none';
+// Безопасный запуск
+window.addEventListener('load', () => {
+    try {
+        initApp();
+    } catch(e) {
+        alert("Ошибка запуска: " + e.message);
     }
 });
 
-// Ресайз
-window.addEventListener('resize', () => {
-    W = window.innerWidth;
-    H = window.innerHeight;
+function initApp() {
+    const canvas = document.getElementById('c');
+    const ctx = canvas.getContext('2d');
+    const debug = document.getElementById('debug');
+    const btn = document.getElementById('start-btn');
+
+    let W = window.innerWidth;
+    let H = window.innerHeight;
     canvas.width = W;
     canvas.height = H;
-    // При ресайзе массив земли может сломаться, пересоздаем если надо
-    if(ground.length < W) {
-        let old = ground;
-        ground = new Float32Array(W + 100).fill(0);
-        // Можно скопировать старое, но проще сбросить, чтобы не было глюков
+
+    // --- НАСТРОЙКИ ---
+    const COUNT = 700; 
+    const PAN_SENSITIVITY = 12; // Как быстро крутится мир
+    const TILT_FORCE = 0.2;     // Сила наклона влево/вправо
+
+    let snow = [];
+    let ground = new Float32Array(W).fill(0);
+    
+    // Гироскоп
+    let gyro = {
+        active: false,
+        alpha: 0, // Вращение (Панорама)
+        gamma: 0, // Наклон (Влево/Вправо)
+        lastAlpha: null
+    };
+
+    let currentWind = 0; // Текущая сила ветра от наклона
+
+    // --- КЛАСС СНЕЖИНКИ ---
+    class Flake {
+        constructor(initY = false) {
+            this.init(initY);
+        }
+
+        init(initY) {
+            this.x = Math.random() * W;
+            this.y = initY ? Math.random() * H : -10;
+            this.z = Math.random(); // Глубина 0..1
+            
+            // Чем ближе (z больше), тем быстрее падает и крупнее
+            this.size = 1 + this.z * 3;
+            this.vy = 1 + this.z * 2.5; 
+            this.vx = 0; // Собственная скорость (пока 0)
+        }
+
+        update(shiftX, tiltWind) {
+            // 1. Панорама (ShiftX)
+            // Когда мы крутимся вправо, мир едет влево.
+            // Параллакс: дальние (z=0) едут медленнее, чем ближние (z=1)?
+            // Нет, в панораме обычно наоборот или одинаково. Сделаем одинаково для стабильности.
+            this.x -= shiftX;
+
+            // 2. Наклон (Wind)
+            // tiltWind задает снос. Чем ближе снежинка, тем сильнее на неё влияет "инерция"
+            this.x += tiltWind * (0.5 + this.z);
+
+            // 3. Падение
+            this.y += this.vy;
+
+            // Зацикливание по краям (Бесконечный мир)
+            if (this.x >= W) this.x -= W;
+            if (this.x < 0) this.x += W;
+
+            // Земля и респаун
+            // Находим индекс земли под снежинкой
+            let gx = Math.floor(this.x);
+            // Защита индекса
+            if (gx < 0) gx = 0; if (gx >= W) gx = W - 1;
+
+            let groundY = H - ground[gx];
+
+            // Если упала
+            if (this.y >= groundY) {
+                // Если крупная - растим сугроб
+                if (this.z > 0.4) {
+                    addToGround(gx, this.z);
+                }
+                this.init(false); // Респаун сверху
+            }
+            
+            // Если улетела слишком далеко вниз (в яму)
+            if (this.y > H + 50) this.init(false);
+        }
+
+        draw() {
+            ctx.beginPath();
+            ctx.arc(this.x, this.y, this.size, 0, Math.PI*2);
+            ctx.fillStyle = `rgba(255, 255, 255, ${0.4 + this.z * 0.6})`;
+            ctx.fill();
+        }
     }
-});
 
-// Запускаем цикл сразу, даже до нажатия кнопки (чтобы видеть работает ли рендер)
-animate();
+    // --- ЗЕМЛЯ ---
+    function addToGround(x, z) {
+        let amount = 0.6;
+        // Немного размазываем по соседям
+        for(let i=-2; i<=2; i++) {
+            let t = x + i;
+            // Циклические координаты земли
+            if (t < 0) t += W;
+            if (t >= W) t -= W;
+            
+            if(ground[t] !== undefined) {
+                ground[t] += amount / (Math.abs(i) + 1);
+                if(ground[t] > H/3) ground[t] = H/3; // Лимит высоты
+            }
+        }
+    }
 
+    function smoothGround() {
+        for(let i=0; i<W; i++) {
+            let left = (i === 0) ? W - 1 : i - 1;
+            let right = (i === W - 1) ? 0 : i + 1;
+            ground[i] = (ground[left] + ground[i] + ground[right]) / 3;
+        }
+    }
+
+    function shiftGroundArray(shiftPixels) {
+        if(Math.abs(shiftPixels) < 1) return;
+        let shift = Math.round(shiftPixels);
+        let temp = new Float32Array(W);
+        
+        for(let i=0; i<W; i++) {
+            let src = (i + shift) % W;
+            if(src < 0) src += W;
+            temp[i] = ground[src];
+        }
+        ground.set(temp);
+    }
+
+    // --- ГИРОСКОП ---
+    function handleOrientation(e) {
+        gyro.active = true;
+        // Alpha: вращение вокруг оси Z (компас) [0, 360]
+        if(e.alpha !== null) gyro.alpha = e.alpha;
+        
+        // Gamma: наклон влево/вправо [-90, 90]
+        // Ограничиваем, чтобы снег не летел горизонтально при полном повороте
+        if(e.gamma !== null) gyro.gamma = e.gamma; 
+
+        // Beta: наклон вперед/назад - ИГНОРИРУЕМ
+        
+        debug.innerText = `Вращение: ${gyro.alpha.toFixed(0)}°\nНаклон (ветер): ${gyro.gamma.toFixed(0)}°`;
+    }
+
+    function updateLogic() {
+        // 1. Панорама (Вращение тела)
+        let shiftX = 0;
+        if(gyro.lastAlpha !== null) {
+            let delta = gyro.alpha - gyro.lastAlpha;
+            if(delta > 180) delta -= 360;
+            if(delta < -180) delta += 360;
+            
+            // Фильтр мелкой дрожи рук
+            if(Math.abs(delta) > 0.05) {
+                shiftX = delta * PAN_SENSITIVITY;
+            }
+        }
+        gyro.lastAlpha = gyro.alpha;
+
+        // 2. Ветер (Наклон телефона)
+        // Gamma обычно от -90 (лево) до 90 (право)
+        let targetWind = gyro.gamma * TILT_FORCE;
+        
+        // Плавное изменение ветра (инерция)
+        currentWind += (targetWind - currentWind) * 0.1;
+
+        // Применяем сдвиг к земле (только панорама смещает землю)
+        if(shiftX !== 0) shiftGroundArray(shiftX);
+        smoothGround();
+
+        // Обновляем снег
+        for(let s of snow) {
+            s.update(shiftX, currentWind);
+        }
+    }
+
+    function draw() {
+        // Фон
+        ctx.fillStyle = '#080d15';
+        ctx.fillRect(0, 0, W, H);
+
+        // Земля
+        ctx.fillStyle = '#ddeeff';
+        ctx.beginPath();
+        ctx.moveTo(0, H);
+        for(let i=0; i<W; i+=5) {
+            ctx.lineTo(i, H - ground[i]);
+        }
+        ctx.lineTo(W, H);
+        ctx.fill();
+
+        // Снег
+        for(let s of snow) {
+            s.draw();
+        }
+
+        updateLogic();
+        requestAnimationFrame(draw);
+    }
+
+    // Инициализация снега
+    for(let i=0; i<COUNT; i++) snow.push(new Flake(true));
+
+    // Обработчик кнопки
+    btn.onclick = async () => {
+        btn.style.display = 'none';
+        debug.innerText = "Запрашиваем доступ...";
+        
+        // Проверка для iOS 13+
+        if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+            try {
+                const response = await DeviceOrientationEvent.requestPermission();
+                if (response === 'granted') {
+                    window.addEventListener('deviceorientation', handleOrientation);
+                    debug.innerText = "Гироскоп: ОК";
+                } else {
+                    alert("Отказано в доступе к датчикам.");
+                }
+            } catch (error) {
+                alert("Ошибка: " + error);
+            }
+        } else {
+            // Android и обычные устройства
+            window.addEventListener('deviceorientation', handleOrientation);
+            debug.innerText = "Гироскоп: ОК (Android/PC)";
+        }
+    };
+
+    // Ресайз окна
+    window.addEventListener('resize', () => {
+        W = canvas.width = window.innerWidth;
+        H = canvas.height = window.innerHeight;
+        // Пересоздаем массив земли при смене ориентации, чтобы не было ошибок
+        ground = new Float32Array(W).fill(0);
+    });
+
+    // Запускаем отрисовку
+    draw();
+}
 </script>
 </body>
 </html>
